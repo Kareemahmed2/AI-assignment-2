@@ -37,18 +37,18 @@ move(State,Next):-
     left(State,Next); right(State,Next); up(State,Next); down(State,Next).
 
 
-left(State, Next):-
+left(State, Next):- fail.
 
 
 
-right(State, Next):-
+right(State, Next):- fail.
 
 
-up(State, Next):-
+up(State, Next):- fail.
 
 
 
-down(State, Next):-
+down(State, Next):- fail.
 
 
 
