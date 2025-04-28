@@ -147,7 +147,6 @@ down(State, Next):-
     mark_position_row(State, R, C, NewR, Next).
 
 % ========== GRID MODIFICATION ==========
-% Changed to use '-' instead of '*' for clarity
 mark_position(State, R, C, NewC, Next) :-
     substitute_in_grid(State, R, C, '-', TempState),
     (nth0(R, TempState, TempRow), nth0(NewC, TempRow, p) -> 
