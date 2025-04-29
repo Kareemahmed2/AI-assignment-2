@@ -1,29 +1,41 @@
-% Main solve predicate
+% Main solve predicate with energy limit
 solve :-
+    write('Enter the drone\'s initial energy (e.g., 6): '),
+    read(X),
+    integer(X),
+    X > 0,
     initial_state(InitialState),
     goal_state(GoalState),
     calculateH(InitialState, GoalState, H),
-    search([ [InitialState, null, 0, H, H] ], [], GoalState).
+    % Store initial energy for recharging
+    retractall(solve_get_initial_energy(_)),
+    assertz(solve_get_initial_energy(X)),
+    % State representation now includes energy level: [State, Parent, G, H, F, Energy]
+    search([ [InitialState, null, 0, H, H, X] ], [], GoalState).
 
 % ========== STATE DEFINITIONS ==========
 initial_state([
     [d, '-', p, '-', o],
     ['-', o, '-', '-', p],
     ['-', '-', o, p, '-'],
-    [p, o, '-', '-', '-'],
+    [p, o, '-', 'R', '-'],  % Added recharge station R at position [3,3]
     ['-', '-', p, o, '-']
 ]).
 
-% Goal state 
+% Goal state is determined by goal_condition/2
 goal_state(GoalState) :- 
-    initial_state(GoalState). 
+    initial_state(GoalState).
 
 % ========== SEARCH CORE ==========
 search(Open, Closed, Goal):-
-    getBestState(Open, [CurrentState, Parent, G, H, F], TmpOpen),
+    getBestState(Open, [CurrentState, Parent, G, H, F, Energy], TmpOpen),
+    % Debug info can be uncommented to check energy levels
+    % write('Current Energy: '), write(Energy), nl,
     goal_condition(CurrentState, Goal), !,
     write("Optimal Drone Route Found!"), nl, nl,
-    printSolution([CurrentState, Parent, G, H, F], Closed),
+    solve_get_initial_energy(InitialEnergy),
+    write("Initial Energy: "), write(InitialEnergy), nl, nl,
+    printSolution([CurrentState, Parent, G, H, F, Energy], Closed),
     write("Final State:"), nl,
     printGrid(CurrentState).
 
@@ -53,40 +65,79 @@ getBestState(Open, BestChild, Rest):-
 findMin([X], X):- !.
 findMin([Head|T], Min):-
     findMin(T, TmpMin),
-    Head = [_, _, _, _, HeadF],
-    TmpMin = [_, _, _, _, TmpF],
+    Head = [_, _, _, _, HeadF, _],
+    TmpMin = [_, _, _, _, TmpF, _],
     (TmpF < HeadF -> Min = TmpMin ; Min = Head).
 
 % ========== CHILD NODE GENERATION ==========
 getAllValidChildren(Node, Open, Closed, Goal, Children):-
     findall(Next, getNextState(Node, Open, Closed, Goal, Next), Children).
 
-
-getNextState([State, Parent, G, _, _], Open, Closed, Goal, [Next, State, NewG, NewH, NewF]):-
+% Updated to account for energy constraints
+getNextState([State, Parent, G, _, _, Energy], Open, Closed, Goal, [Next, State, NewG, NewH, NewF, NewEnergy]):-
+    Energy > 0,  % Only allow moves if there's energy left
     move(State, Next, MoveCost),
+    % Calculate new energy before the move (will be updated if at recharge)
+    TempEnergy is Energy - MoveCost,
+    % Check if drone is at recharge station after the move
+    (is_drone_at_recharge(Next) -> 
+        % Get max energy (same as initial energy)
+        solve_get_initial_energy(MaxEnergy),
+        NewEnergy = MaxEnergy
+    ;
+        % Normal energy reduction
+        NewEnergy = TempEnergy
+    ),
+    
+    % Energy must be non-negative after the move
+    NewEnergy >= 0,
+
+    % Standard A* calculation
     calculateH(Next, Goal, NewH),
     NewG is G + MoveCost,
     NewF is NewG + NewH,
-    (not(member([Next, _, _, _, _], Open)) ; memberButBetter(Next, Open, NewF)),
-    (not(member([Next, _, _, _, _], Closed)) ; memberButBetter(Next, Closed, NewF)).
+    
+    % Standard A* checks
+    (not(member([Next, _, _, _, _, _], Open)) ; memberButBetter(Next, Open, NewF, NewEnergy)),
+    (not(member([Next, _, _, _, _, _], Closed)) ; memberButBetter(Next, Closed, NewF, NewEnergy)).
 
-memberButBetter(Next, List, NewF):-
-    findall(F, member([Next, _, _, _, F], List), Numbers),
-    (Numbers = [] -> true ; min_list(Numbers, MinOldF), MinOldF > NewF).
+% Check if drone is currently at a recharge station
+is_drone_at_recharge(State) :-
+    find_drone(State, (R, C)),
+    initial_state(InitState),
+    nth0(R, InitState, InitRow),
+    nth0(C, InitRow, Cell),
+    Cell == 'R'.
+
+% Helper to get initial energy (for recharge)
+:- dynamic solve_get_initial_energy/1.
+solve_get_initial_energy(6).  % Default value, will be updated during solve
+
+% Updated to consider energy in comparison
+memberButBetter(Next, List, NewF, NewEnergy):-
+    findall([F, E], member([Next, _, _, _, F, E], List), Values),
+    (Values = [] -> true ; 
+        better_state(NewF, NewEnergy, Values)).
+
+% A state is better if it has either lower F or same F with more energy
+better_state(NewF, NewEnergy, Values) :-
+    \+ (member([F, E], Values), (F < NewF ; (F =:= NewF, E >= NewEnergy))).
 
 addChildren(Children, Open, NewOpen):-
     append(Open, Children, NewOpen).
 
 % ========== SOLUTION PRINTING ==========
-printSolution([State, null, G, H, F], _):-
-    write("Initial State (g="), write(G), write(", h="), write(H), write(", f="), write(F), write("):"), nl,
+printSolution([State, null, G, H, F, Energy], _):-
+    write("Initial State (g="), write(G), write(", h="), write(H), 
+    write(", f="), write(F), write(", energy="), write(Energy), write("):"), nl,
     printGrid(State), nl, nl,
     write("Steps:"), nl, nl.
 
-printSolution([State, Parent, G, H, F], Closed):-
-    member([Parent, GrandParent, PrevG, PH, PF], Closed),
-    printSolution([Parent, GrandParent, PrevG, PH, PF], Closed),
-    write("Move (g="), write(G), write(", h="), write(H), write(", f="), write(F), write("):"), nl,
+printSolution([State, Parent, G, H, F, Energy], Closed):-
+    member([Parent, GrandParent, PrevG, PH, PF, PEnergy], Closed),
+    printSolution([Parent, GrandParent, PrevG, PH, PF, PEnergy], Closed),
+    write("Move (g="), write(G), write(", h="), write(H), 
+    write(", f="), write(F), write(", energy="), write(Energy), write("):"), nl,
     printGrid(State), nl.
 
 printGrid([]).
@@ -147,29 +198,55 @@ down(State, Next):-
     mark_position_row(State, R, C, NewR, Next).
 
 % ========== GRID MODIFICATION ==========
+% Modified to handle recharge stations - horizontal movement
 mark_position(State, R, C, NewC, Next) :-
-    substitute_in_grid(State, R, C, '-', TempState),
-    (nth0(R, TempState, TempRow), nth0(NewC, TempRow, p) -> 
-        substitute_in_grid(TempState, R, NewC, 'd', Next) ;
-        substitute_in_grid(TempState, R, NewC, 'd', Next)).
+    % Check if current position is a recharge station in the initial state
+    initial_state(InitState),
+    nth0(R, InitState, InitRow),
+    nth0(C, InitRow, CellType),
+    
+    % If current cell was a recharge station in initial state, restore R, otherwise empty
+    (CellType == 'R' -> 
+        substitute_in_grid(State, R, C, 'R', TempState)
+    ;
+        substitute_in_grid(State, R, C, '-', TempState)
+    ),
+    
+    % Handle destination cell, preserving special cells
+    nth0(R, TempState, TempRow),
+    nth0(NewC, TempRow, DestContent),
+    
+    % Place drone in the destination, preserving package pickup logic
+    substitute_in_grid(TempState, R, NewC, d, Next).
 
+% Modified to handle recharge stations - vertical movement
 mark_position_row(State, R, C, NewR, Next) :-
-    substitute_in_grid(State, R, C, '-', TempState),
-    (nth0(NewR, TempState, TempRow), nth0(C, TempRow, p) -> 
-        substitute_in_grid(TempState, NewR, C, 'd', Next) ;
-        substitute_in_grid(TempState, NewR, C, 'd', Next)).
+    % Check if current position is a recharge station in the initial state
+    initial_state(InitState),
+    nth0(R, InitState, InitRow),
+    nth0(C, InitRow, CellType),
+    
+    % If current cell was a recharge station in initial state, restore R, otherwise empty
+    (CellType == 'R' -> 
+        substitute_in_grid(State, R, C, 'R', TempState)
+    ;
+        substitute_in_grid(State, R, C, '-', TempState)
+    ),
+    
+    % Handle destination cell, preserving special cells
+    nth0(NewR, TempState, TempRow),
+    nth0(C, TempRow, DestContent),
+    
+    % Place drone in the destination, preserving package pickup logic
+    substitute_in_grid(TempState, NewR, C, d, Next).
 
-% Improved grid manipulation predicates
+% Grid manipulation predicates
 substitute_in_grid(Grid, Row, Col, NewElement, NewGrid) :-
-    length(Grid, NumRows),
-    Row < NumRows,
     nth0(Row, Grid, OldRow),
     substitute_in_row(OldRow, Col, NewElement, NewRow),
     replace_nth0(Row, Grid, NewRow, NewGrid).
 
 substitute_in_row(Row, Col, NewElement, NewRow) :-
-    length(Row, NumCols),
-    Col < NumCols,
     replace_nth0(Col, Row, NewElement, NewRow).
 
 % Helper predicate to replace element at index N in a list
